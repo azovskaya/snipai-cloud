@@ -1,125 +1,57 @@
 """
 SnipAI v2.0 — core.py
+Без torch/sentence-transformers — используем OpenAI embeddings API
 """
 import os
 import logging
-from typing import List
 from dotenv import load_dotenv
 
-from llama_index.core import Settings
-from llama_index.core.embeddings import BaseEmbedding
-from sentence_transformers import SentenceTransformer
-from qdrant_client import QdrantClient
 import openai
+from llama_index.core import Settings
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-LLM_MODEL   = os.getenv("LLM_MODEL",       "qwen/qwen-2.5-72b-instruct")
-EMBED_MODEL = os.getenv("EMBED_MODEL",      "intfloat/multilingual-e5-small")
-QDRANT_HOST = os.getenv("QDRANT_HOST",      "qdrant")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT",  "6333"))
-COLLECTION  = os.getenv("COLLECTION_NAME",  "snips_rk")
+LLM_MODEL   = os.getenv("LLM_MODEL",      "qwen/qwen3-8b")
+EMBED_MODEL = os.getenv("EMBED_MODEL",     "text-embedding-3-small")
+COLLECTION  = os.getenv("COLLECTION_NAME", "snips_rk")
+
+QDRANT_URL  = os.getenv("QDRANT_URL")
+QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 
 openai_client: openai.OpenAI = None
+_settings_initialized = False
 
 
-class E5Embedding(BaseEmbedding):
-    _model: SentenceTransformer = None
-
-    def __init__(self, model_name: str, **kwargs):
-        super().__init__(model_name=model_name, **kwargs)
-        object.__setattr__(self, '_model', SentenceTransformer(model_name))
-
-    def _get_query_embedding(self, query: str) -> List[float]:
-        return self._model.encode(f"query: {str(query)}").tolist()
-
-    def _get_text_embedding(self, text: str) -> List[float]:
-        return self._model.encode(f"passage: {str(text)}").tolist()
-
-    def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
-        if not texts:
-            return []
-        return self._model.encode([f"passage: {str(t)}" for t in texts]).tolist()
-
-    async def _aget_query_embedding(self, query: str) -> List[float]:
-        return self._get_query_embedding(query)
-
-    async def _aget_text_embedding(self, text: str) -> List[float]:
-        return self._get_text_embedding(text)
-
-    async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
-        return self._get_text_embeddings(texts)
-
-
-def get_qdrant_client() -> QdrantClient:
+def get_qdrant_client():
+    from qdrant_client import QdrantClient
     try:
         api_key = os.getenv("QDRANT_API_KEY")
-        host = QDRANT_HOST
-
-        if api_key:
-            client = QdrantClient(
-                url=f"https://{host}",
-                api_key=api_key,
-                timeout=60,
-            )
+        if QDRANT_URL:
+            client = QdrantClient(url=QDRANT_URL, api_key=api_key, timeout=60)
         else:
-            client = QdrantClient(
-                host=host,
-                port=QDRANT_PORT,
-                timeout=60,
-            )
-
+            client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=60)
         client.get_collections()
         return client
-
     except Exception as e:
-        raise ConnectionError(
-            f"Qdrant недоступен: {host}\nОшибка: {e}"
-        )
-        
-def call_llm(prompt: str, retries: int = 3, delay: float = 2.0) -> str:
-    """Прямой вызов OpenRouter через openai SDK с автоматическим retry."""
-    import time
-
-    last_error = None
-    for attempt in range(1, retries + 1):
-        try:
-            response = openai_client.chat.completions.create(
-                model=LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": "Вы — SnipAI, экспертная система по СНиП РК."},
-                    {"role": "user",   "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=2048,
-            )
-
-            # Защита от None
-            if response is None or not response.choices:
-                raise ValueError("OpenRouter вернул пустой ответ (choices=None)")
-
-            content = response.choices[0].message.content
-            if content is None:
-                raise ValueError("OpenRouter вернул message.content=None")
-
-            return content.strip()
-
-        except (ValueError, Exception) as e:
-            last_error = e
-            logger.warning(f"[call_llm] попытка {attempt}/{retries} — ошибка: {e}")
-            if attempt < retries:
-                time.sleep(delay)
-
-    raise RuntimeError(f"[call_llm] все {retries} попытки завершились ошибкой: {last_error}")
+        target = QDRANT_URL or f"{QDRANT_HOST}:{QDRANT_PORT}"
+        raise ConnectionError(f"Qdrant недоступен: {target}\nОшибка: {e}")
 
 
 def init_settings() -> bool:
-    global openai_client
+    """
+    Ленивая инициализация — вызывать только перед реальной работой.
+    Использует OpenAI embeddings через OpenRouter API (без torch!).
+    """
+    global openai_client, _settings_initialized
+
+    if _settings_initialized:
+        return True
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        print("❌ OPENROUTER_API_KEY не установлен в .env файле")
+        print("❌ OPENROUTER_API_KEY не задан")
         return False
 
     try:
@@ -128,18 +60,26 @@ def init_settings() -> bool:
             base_url="https://openrouter.ai/api/v1",
             default_headers={
                 "HTTP-Referer": "https://snipai.kz",
-                "X-Title": "SnipAI v2.0",
-            }
+                "X-Title":      "SnipAI v2.0",
+            },
         )
 
-        print(f"⏳ Загрузка модели эмбеддингов: {EMBED_MODEL}")
-        Settings.embed_model = E5Embedding(model_name=EMBED_MODEL)
+        # OpenAI embeddings через OpenRouter — НЕ нужен torch!
+        from llama_index.embeddings.openai import OpenAIEmbedding
+        Settings.embed_model = OpenAIEmbedding(
+            model=EMBED_MODEL,
+            api_key=api_key,
+            api_base="https://openrouter.ai/api/v1",
+        )
         Settings.chunk_size    = 512
         Settings.chunk_overlap = 100
 
-        print(f"✅ LLM (OpenRouter): {LLM_MODEL}")
-        print(f"✅ Embeddings (E5) : {EMBED_MODEL}")
-        print(f"✅ Qdrant          : {QDRANT_HOST}:{QDRANT_PORT} / {COLLECTION}")
+        mode = f"☁️  {QDRANT_URL}" if QDRANT_URL else f"🐳 {QDRANT_HOST}:{QDRANT_PORT}"
+        print(f"✅ LLM      : {LLM_MODEL}")
+        print(f"✅ Embeddings: {EMBED_MODEL} (OpenRouter API)")
+        print(f"✅ Qdrant   : {mode} / {COLLECTION}")
+
+        _settings_initialized = True
         return True
 
     except Exception as e:
@@ -148,10 +88,38 @@ def init_settings() -> bool:
         return False
 
 
+def call_llm(prompt: str, retries: int = 3, delay: float = 2.0) -> str:
+    import time
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            response = openai_client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "Вы — SnipAI, экспертная система по СНиП РК."},
+                    {"role": "user",   "content": prompt},
+                ],
+                temperature=0.1,
+                max_tokens=2048,
+            )
+            if not response or not response.choices:
+                raise ValueError("Пустой ответ от OpenRouter")
+            content = response.choices[0].message.content
+            if content is None:
+                raise ValueError("message.content=None")
+            return content.strip()
+        except Exception as e:
+            last_error = e
+            logger.warning(f"[call_llm] попытка {attempt}/{retries}: {e}")
+            if attempt < retries:
+                time.sleep(delay)
+    raise RuntimeError(f"[call_llm] все {retries} попытки провалились: {last_error}")
+
+
 if __name__ == "__main__":
     if init_settings():
         client = get_qdrant_client()
         cols = [c.name for c in client.get_collections().collections]
-        print(f"\n📦 Коллекции в Qdrant: {cols or ['(пусто)']}")
-        print("\n🚀 Ядро работает корректно!")
+        print(f"\n📦 Коллекции: {cols or ['(пусто)']}")
+        print("\n🚀 Ядро работает!")
         

@@ -1,30 +1,11 @@
-# =====================================================
-# SnipAI v2.0 — Зависимости (Python 3.11)
-# =====================================================
-
-# ── FastAPI (веб-сервер) ──────────────────────────
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
-
-# ── LlamaIndex (ядро RAG) ────────────────────────
-llama-index>=0.11.0
-llama-index-core>=0.11.0
+fastapi
+uvicorn[standard]
+python-dotenv
+openai
+qdrant-client
+llama-index-core
 llama-index-vector-stores-qdrant
-llama-index-embeddings-huggingface
-
-# ── OpenAI SDK (для прямых вызовов OpenRouter) ───
-openai>=1.0.0
-
-# ── Sentence Transformers ─────────────────────────
-sentence-transformers>=2.7.0
-
-# ── Парсинг документов ───────────────────────────
-pdfplumber>=0.11.0
-python-docx>=1.1.0
-
-# ── Векторная БД ─────────────────────────────────
-qdrant-client>=1.9.0
-
-# ── Утилиты ──────────────────────────────────────
-python-dotenv>=1.0.0
-tqdm>=4.66.0
+llama-index-embeddings-openai
+pdfplumber
+python-docx
+tqdm
