@@ -1,6 +1,5 @@
 """
 SnipAI v2.0 — core.py
-Без torch/sentence-transformers — используем OpenAI embeddings API
 """
 import os
 import logging
@@ -16,7 +15,8 @@ LLM_MODEL   = os.getenv("LLM_MODEL",      "qwen/qwen3-8b")
 EMBED_MODEL = os.getenv("EMBED_MODEL",     "text-embedding-3-small")
 COLLECTION  = os.getenv("COLLECTION_NAME", "snips_rk")
 
-QDRANT_URL  = os.getenv("QDRANT_URL")
+# ✅ НЕ читаем QDRANT_URL на уровне модуля — читаем внутри функции,
+# чтобы гарантированно получить актуальное значение из окружения Render
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 
@@ -26,24 +26,25 @@ _settings_initialized = False
 
 def get_qdrant_client():
     from qdrant_client import QdrantClient
+
+    # ✅ Читаем переменные здесь — при каждом вызове функции,
+    # а не при импорте модуля. Это гарантирует свежие значения из Render.
+    qdrant_url = os.getenv("QDRANT_URL")
+    api_key    = os.getenv("QDRANT_API_KEY")
+
     try:
-        api_key = os.getenv("QDRANT_API_KEY")
-        if QDRANT_URL:
-            client = QdrantClient(url=QDRANT_URL, api_key=api_key, timeout=60)
+        if qdrant_url:
+            client = QdrantClient(url=qdrant_url, api_key=api_key, timeout=60)
         else:
             client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=60)
         client.get_collections()
         return client
     except Exception as e:
-        target = QDRANT_URL or f"{QDRANT_HOST}:{QDRANT_PORT}"
+        target = qdrant_url or f"{QDRANT_HOST}:{QDRANT_PORT}"
         raise ConnectionError(f"Qdrant недоступен: {target}\nОшибка: {e}")
 
 
 def init_settings() -> bool:
-    """
-    Ленивая инициализация — вызывать только перед реальной работой.
-    Использует OpenAI embeddings через OpenRouter API (без torch!).
-    """
     global openai_client, _settings_initialized
 
     if _settings_initialized:
@@ -64,7 +65,6 @@ def init_settings() -> bool:
             },
         )
 
-        # OpenAI embeddings через OpenRouter — НЕ нужен torch!
         from llama_index.embeddings.openai import OpenAIEmbedding
         Settings.embed_model = OpenAIEmbedding(
             model=EMBED_MODEL,
@@ -74,7 +74,9 @@ def init_settings() -> bool:
         Settings.chunk_size    = 512
         Settings.chunk_overlap = 100
 
-        mode = f"☁️  {QDRANT_URL}" if QDRANT_URL else f"🐳 {QDRANT_HOST}:{QDRANT_PORT}"
+        # ✅ Тоже читаем здесь — свежее значение
+        qdrant_url = os.getenv("QDRANT_URL")
+        mode = f"☁️  {qdrant_url}" if qdrant_url else f"🐳 {QDRANT_HOST}:{QDRANT_PORT}"
         print(f"✅ LLM      : {LLM_MODEL}")
         print(f"✅ Embeddings: {EMBED_MODEL} (OpenRouter API)")
         print(f"✅ Qdrant   : {mode} / {COLLECTION}")
