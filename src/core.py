@@ -12,11 +12,9 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 LLM_MODEL   = os.getenv("LLM_MODEL",      "qwen/qwen3-8b")
-EMBED_MODEL = os.getenv("EMBED_MODEL",     "text-embedding-3-small")
+EMBED_MODEL = os.getenv("EMBED_MODEL",     "openai/text-embedding-3-small")
 COLLECTION  = os.getenv("COLLECTION_NAME", "snips_rk")
 
-# ✅ НЕ читаем QDRANT_URL на уровне модуля — читаем внутри функции,
-# чтобы гарантированно получить актуальное значение из окружения Render
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 
@@ -27,8 +25,7 @@ _settings_initialized = False
 def get_qdrant_client():
     from qdrant_client import QdrantClient
 
-    # ✅ Читаем переменные здесь — при каждом вызове функции,
-    # а не при импорте модуля. Это гарантирует свежие значения из Render.
+    # Читаем внутри функции — гарантированно свежие значения от Render
     qdrant_url = os.getenv("QDRANT_URL")
     api_key    = os.getenv("QDRANT_API_KEY")
 
@@ -67,18 +64,18 @@ def init_settings() -> bool:
 
         from llama_index.embeddings.openai import OpenAIEmbedding
         Settings.embed_model = OpenAIEmbedding(
-            model=EMBED_MODEL,
+            # ✅ OpenRouter требует префикс openai/ для моделей OpenAI
+            model="openai/text-embedding-3-small",
             api_key=api_key,
             api_base="https://openrouter.ai/api/v1",
         )
         Settings.chunk_size    = 512
         Settings.chunk_overlap = 100
 
-        # ✅ Тоже читаем здесь — свежее значение
         qdrant_url = os.getenv("QDRANT_URL")
         mode = f"☁️  {qdrant_url}" if qdrant_url else f"🐳 {QDRANT_HOST}:{QDRANT_PORT}"
         print(f"✅ LLM      : {LLM_MODEL}")
-        print(f"✅ Embeddings: {EMBED_MODEL} (OpenRouter API)")
+        print(f"✅ Embeddings: openai/text-embedding-3-small (OpenRouter)")
         print(f"✅ Qdrant   : {mode} / {COLLECTION}")
 
         _settings_initialized = True
