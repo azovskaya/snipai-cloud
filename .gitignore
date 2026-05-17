@@ -1,6 +1,26 @@
-.env
+# Python virtual environment
+venv/
+.venv/
+env/
+
+# Python cache
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Env files
+.env
+.env.local
+*.env
+
+# Docker
+*.log
+
+# macOS
 .DS_Store
-data/
-*.egg-info/
+
+# IDE
+.vscode/
+.idea/
