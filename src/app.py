@@ -38,19 +38,13 @@ AVAILABLE_MODELS = [
 ]
 
 
-# ── Lifespan (современная замена @app.on_event) ───
+# ── Lifespan ──────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Инициализация при старте, очистка при остановке."""
-    global retriever
-    logger.info("Запуск SnipAI — инициализация ретривера...")
-    retriever = build_retriever()
-    if retriever:
-        logger.info("Ретривер инициализирован успешно.")
-    else:
-        logger.warning("База документов пуста — загрузите файлы и вызовите /api/reindex")
+    # ✅ НЕ грузим модель при старте — экономим память (Free план = 512MB)
+    # Ретривер инициализируется лениво при первом запросе в /api/ask
+    logger.info("SnipAI v2.0 запущен.")
     yield
-    # Код после yield выполняется при остановке приложения
     logger.info("SnipAI остановлен.")
 
 
@@ -134,7 +128,7 @@ async def ask_question(req: QuestionRequest):
         import core
         core.LLM_MODEL = current_model
 
-    # Если ретривер не инициализирован — пробуем ещё раз
+    # Ленивая инициализация ретривера при первом запросе
     if retriever is None:
         retriever = build_retriever()
     if retriever is None:
