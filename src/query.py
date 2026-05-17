@@ -2,7 +2,6 @@
 SnipAI v2.0 — query.py
 """
 import os
-import sys
 import json
 import logging
 from datetime import datetime
@@ -11,7 +10,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 load_dotenv()
 
-from core import init_settings, get_qdrant_client, COLLECTION, call_llm
+from core import get_qdrant_client, COLLECTION, call_llm
 
 from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.retrievers import VectorIndexRetriever
@@ -21,18 +20,14 @@ from llama_index.vector_stores.qdrant import QdrantVectorStore
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """\
-Вы — SnipAI, экспертная система по нормативно-технической \
-документации Республики Казахстан (СНиП РК, СП РК, РДС, ГОСТ).
+SYSTEM_PROMPT = """Вы — SnipAI, экспертная система по нормативно-технической документации Республики Казахстан (СНиП РК, СП РК, РДС, ГОСТ).
 
 ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
 1. Отвечайте ИСКЛЮЧИТЕЛЬНО на основе предоставленного контекста.
 2. Точно воспроизводите цифры, допуски и нормы из документов.
 3. Указывайте название документа и номер пункта/таблицы.
-4. Если данных нет в базе — прямо скажите: \
-"По данному вопросу информация в базе СНиП РК не найдена."
-5. Структурируйте ответ: используйте нумерованные списки \
-для нескольких требований.
+4. Если данных нет в базе — прямо скажите: "По данному вопросу информация в базе СНиП РК не найдена."
+5. Структурируйте ответ: используйте нумерованные списки для нескольких требований.
 
 КОНТЕКСТ ИЗ БАЗЫ СНиП РК:
 ─────────────────────────────────────
@@ -81,35 +76,74 @@ def _get_source(node: NodeWithScore) -> str:
     return meta.get("source_file") or meta.get("file_name") or ""
 
 
+def _init_embed_model():
+    """
+    Ленивая инициализация модели эмбеддингов.
+    Вызывается только при первом реальном запросе — НЕ при импорте модуля.
+    Это предотвращает OOM на Render Free (512MB лимит).
+    """
+    from llama_index.core import Settings
+    from core import E5Embedding, EMBED_MODEL
+
+    if Settings.embed_model is None or isinstance(Settings.embed_model, type):
+        logger.info("Загрузка модели эмбеддингов: %s", EMBED_MODEL)
+        Settings.embed_model  = E5Embedding(model_name=EMBED_MODEL)
+        Settings.chunk_size   = 512
+        Settings.chunk_overlap = 100
+        logger.info("Модель эмбеддингов загружена.")
+
+
+def _init_llm_client():
+    """
+    Ленивая инициализация OpenRouter клиента.
+    Вызывается только при первом реальном запросе.
+    """
+    import core
+    if core.openai_client is None:
+        import openai
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY не задан в переменных окружения")
+        core.openai_client = openai.OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": "https://snipai.kz",
+                "X-Title":      "SnipAI v2.0",
+            },
+        )
+        logger.info("OpenRouter клиент инициализирован.")
+
+
 def build_retriever() -> Optional[VectorIndexRetriever]:
-    if not init_settings():
+    """
+    Строит ретривер. Модель эмбеддингов инициализируется здесь лениво —
+    только при первом вызове, не при старте приложения.
+    """
+    # ✅ Ленивая загрузка — грузим модели только сейчас, не при импорте
+    try:
+        _init_embed_model()
+        _init_llm_client()
+    except Exception as e:
+        logger.error("Ошибка инициализации: %s", e)
         return None
 
     try:
         client = get_qdrant_client()
     except ConnectionError as e:
-        print(f"\n❌ {e}")
+        logger.error("Qdrant недоступен: %s", e)
         return None
 
     try:
         info  = client.get_collection(COLLECTION)
         count = info.points_count or 0
         if count == 0:
-            print(f"\n⚠️  Коллекция «{COLLECTION}» пуста.")
+            logger.warning("Коллекция «%s» пуста.", COLLECTION)
             return None
-        print(f"✅ Документов в базе: {count} векторов")
+        logger.info("Документов в базе: %d векторов", count)
     except Exception:
-        print(f"\n⚠️  Коллекция «{COLLECTION}» не найдена.")
+        logger.warning("Коллекция «%s» не найдена.", COLLECTION)
         return None
-
-    try:
-        points, _ = client.scroll(COLLECTION, limit=1, with_payload=True, with_vectors=False)
-        if points:
-            print("\n🔬 RAW PAYLOAD (первая точка):")
-            print(json.dumps(points[0].payload, ensure_ascii=False, indent=2)[:1200])
-            print()
-    except Exception as e:
-        print(f"⚠️  Не удалось прочитать payload: {e}\n")
 
     vector_store    = QdrantVectorStore(client=client, collection_name=COLLECTION)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
@@ -134,7 +168,10 @@ def ask(retriever: VectorIndexRetriever, question: str) -> str:
         logger.warning(
             "Все %d нод вернули пустой текст. Payload первой ноды: %s",
             len(nodes),
-            json.dumps(getattr(nodes[0].node, "metadata", {}) if nodes else {}, ensure_ascii=False)[:400]
+            json.dumps(
+                getattr(nodes[0].node, "metadata", {}) if nodes else {},
+                ensure_ascii=False
+            )[:400],
         )
         return NO_INFO_MSG
 
@@ -143,25 +180,21 @@ def ask(retriever: VectorIndexRetriever, question: str) -> str:
     return call_llm(prompt)
 
 
-def print_header() -> None:
-    os.system("clear" if os.name == "posix" else "cls")
-    print("=" * 65)
-    print(f"  🏗️  SnipAI v2.0  |  Нормы РК  |  {datetime.now():%d.%m.%Y}")
-    print("=" * 65)
-    print("  Введите вопрос по СНиП РК. Для выхода: 'выход'")
-    print("=" * 65 + "\n")
-
-
+# ── CLI режим (python query.py) ───────────────────
 def main() -> None:
+    import sys
+
     print("=" * 65)
-    print("  🏗️  SnipAI v2.0 — запуск...")
+    print(f"  🏗️  SnipAI v2.0  |  {datetime.now():%d.%m.%Y}")
     print("=" * 65)
 
     retriever = build_retriever()
     if retriever is None:
+        print("❌ Не удалось инициализировать ретривер.")
         sys.exit(1)
 
-    print_header()
+    print("  Введите вопрос по СНиП РК. Для выхода: \'выход\'")
+    print("=" * 65 + "\n")
 
     while True:
         try:
@@ -172,13 +205,11 @@ def main() -> None:
 
         if not question:
             continue
-
         if question.lower() in ("выход", "exit", "quit", "q"):
             print("\n👋 До свидания!")
             break
 
         print("\n⏳ Поиск в базе СНиП РК...\n")
-
         try:
             answer = ask(retriever, question)
             print("─" * 65)
@@ -187,7 +218,7 @@ def main() -> None:
             print("─" * 65 + "\n")
         except Exception as e:
             logger.exception("Ошибка запроса.")
-            print(f"❌ Ошибка запроса: {e}\n")
+            print(f"❌ Ошибка: {e}\n")
 
 
 if __name__ == "__main__":
