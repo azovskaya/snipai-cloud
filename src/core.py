@@ -12,7 +12,6 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 LLM_MODEL   = os.getenv("LLM_MODEL",      "qwen/qwen3-8b")
-EMBED_MODEL = os.getenv("EMBED_MODEL",     "openai/text-embedding-3-small")
 COLLECTION  = os.getenv("COLLECTION_NAME", "snips_rk")
 
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
@@ -24,11 +23,8 @@ _settings_initialized = False
 
 def get_qdrant_client():
     from qdrant_client import QdrantClient
-
-    # Читаем внутри функции — гарантированно свежие значения от Render
     qdrant_url = os.getenv("QDRANT_URL")
     api_key    = os.getenv("QDRANT_API_KEY")
-
     try:
         if qdrant_url:
             client = QdrantClient(url=qdrant_url, api_key=api_key, timeout=60)
@@ -62,13 +58,39 @@ def init_settings() -> bool:
             },
         )
 
-        from llama_index.embeddings.openai import OpenAIEmbedding
-        Settings.embed_model = OpenAIEmbedding(
-            # ✅ OpenRouter требует префикс openai/ для моделей OpenAI
-            model="openai/text-embedding-3-small",
-            api_key=api_key,
-            api_base="https://openrouter.ai/api/v1",
-        )
+        # ✅ OpenAIEmbedding не принимает кастомные имена моделей.
+        # Используем прямой openai.Embedding через OpenRouter
+        from llama_index.core.embeddings import BaseEmbedding
+        from typing import List
+
+        class OpenRouterEmbedding(BaseEmbedding):
+            def _get_query_embedding(self, query: str) -> List[float]:
+                return self._embed(query)
+
+            def _get_text_embedding(self, text: str) -> List[float]:
+                return self._embed(text)
+
+            def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+                resp = openai_client.embeddings.create(
+                    model="openai/text-embedding-3-small",
+                    input=texts,
+                )
+                return [d.embedding for d in resp.data]
+
+            def _embed(self, text: str) -> List[float]:
+                resp = openai_client.embeddings.create(
+                    model="openai/text-embedding-3-small",
+                    input=[text],
+                )
+                return resp.data[0].embedding
+
+            async def _aget_query_embedding(self, query: str) -> List[float]:
+                return self._get_query_embedding(query)
+
+            async def _aget_text_embedding(self, text: str) -> List[float]:
+                return self._get_text_embedding(text)
+
+        Settings.embed_model   = OpenRouterEmbedding(model_name="openai/text-embedding-3-small")
         Settings.chunk_size    = 512
         Settings.chunk_overlap = 100
 
