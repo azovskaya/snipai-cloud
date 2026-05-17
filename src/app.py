@@ -3,27 +3,59 @@ SnipAI v2.0 — app.py
 FastAPI backend + встроенный фронтенд
 """
 import os
-import json
 import logging
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from core import init_settings, get_qdrant_client, COLLECTION, call_llm, LLM_MODEL
-from query import build_retriever, ask, NO_INFO_MSG
+from core import get_qdrant_client, COLLECTION
+from query import build_retriever, ask
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="SnipAI", version="2.0")
+# ── Глобальное состояние ──────────────────────────
+retriever = None
+current_model = os.getenv("LLM_MODEL", "qwen/qwen3-8b")
+
+AVAILABLE_MODELS = [
+    {"id": "qwen/qwen3-8b",                     "name": "Qwen3 8B"},
+    {"id": "qwen/qwen3-14b",                     "name": "Qwen3 14B"},
+    {"id": "qwen/qwen3-32b",                     "name": "Qwen3 32B"},
+    {"id": "deepseek/deepseek-chat-v3-0324",     "name": "DeepSeek V3"},
+    {"id": "meta-llama/llama-4-maverick",        "name": "Llama 4 Maverick"},
+    {"id": "meta-llama/llama-3.3-70b-instruct",  "name": "Llama 3.3 70B"},
+    {"id": "google/gemma-3-27b-it",              "name": "Gemma 3 27B"},
+]
+
+
+# ── Lifespan (современная замена @app.on_event) ───
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Инициализация при старте, очистка при остановке."""
+    global retriever
+    logger.info("Запуск SnipAI — инициализация ретривера...")
+    retriever = build_retriever()
+    if retriever:
+        logger.info("Ретривер инициализирован успешно.")
+    else:
+        logger.warning("База документов пуста — загрузите файлы и вызовите /api/reindex")
+    yield
+    # Код после yield выполняется при остановке приложения
+    logger.info("SnipAI остановлен.")
+
+
+# ── Приложение ────────────────────────────────────
+app = FastAPI(title="SnipAI", version="2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,27 +63,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Глобальный ретривер — инициализируется один раз при старте
-retriever = None
-current_model = os.getenv("LLM_MODEL", "qwen/qwen3-8b")
-
-
-AVAILABLE_MODELS = [
-    {"id": "qwen/qwen3-8b",                        "name": "Qwen3 8B"},
-    {"id": "qwen/qwen3-14b",                       "name": "Qwen3 14B"},
-    {"id": "qwen/qwen3-32b",                       "name": "Qwen3 32B"},
-    {"id": "deepseek/deepseek-chat-v3-0324",       "name": "DeepSeek V3"},
-    {"id": "meta-llama/llama-4-maverick",          "name": "Llama 4 Maverick"},
-    {"id": "meta-llama/llama-3.3-70b-instruct",    "name": "Llama 3.3 70B "},
-    {"id": "google/gemma-3-27b-it",                "name": "Gemma 3 27B"},
-]
-
-
-@app.on_event("startup")
-async def startup():
-    global retriever
-    retriever = build_retriever()
 
 
 # ── Модели запросов ───────────────────────────────
@@ -104,7 +115,6 @@ async def set_model(req: ModelRequest):
         raise HTTPException(status_code=400, detail="Модель не найдена")
     current_model = req.model_id
     os.environ["LLM_MODEL"] = current_model
-    # Обновляем глобальный клиент в core
     import core
     core.LLM_MODEL = current_model
     return {"ok": True, "model": current_model}
@@ -128,7 +138,10 @@ async def ask_question(req: QuestionRequest):
     if retriever is None:
         retriever = build_retriever()
     if retriever is None:
-        raise HTTPException(status_code=503, detail="База документов пуста. Сначала проиндексируйте файлы.")
+        raise HTTPException(
+            status_code=503,
+            detail="База документов пуста. Сначала проиндексируйте файлы."
+        )
 
     try:
         answer = ask(retriever, req.question)
@@ -156,7 +169,7 @@ async def reindex():
         return {
             "ok": True,
             "output": result.stdout[-2000:] if result.stdout else "",
-            "errors": result.stderr[-500:] if result.stderr else "",
+            "errors": result.stderr[-500:]  if result.stderr else "",
         }
     except subprocess.TimeoutExpired:
         return {"ok": False, "output": "Таймаут индексации (5 мин)"}
