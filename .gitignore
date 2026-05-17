@@ -24,3 +24,4 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+data/.indexed_files.json
