@@ -1,11 +1,6 @@
-# Python
+.env
 __pycache__/
-*.py[cod]
-*$py.class
-venv/
-# Модели и данные (те самые ГБ)
-data/.indexed_files.json
-.cache/
-
-# Docker
-.docker_temp/
+*.pyc
+.DS_Store
+data/
+*.egg-info/

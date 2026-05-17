@@ -1,0 +1,6 @@
+#!/Users/Guest/SnipAI/venv/bin/python3
+import sys
+from llama_cloud_services.parse.cli.main import parse
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(parse())

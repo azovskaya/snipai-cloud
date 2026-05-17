@@ -54,16 +54,30 @@ class E5Embedding(BaseEmbedding):
 
 def get_qdrant_client() -> QdrantClient:
     try:
-        client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=60)
+        api_key = os.getenv("QDRANT_API_KEY")
+        host = QDRANT_HOST
+
+        if api_key:
+            client = QdrantClient(
+                url=f"https://{host}",
+                api_key=api_key,
+                timeout=60,
+            )
+        else:
+            client = QdrantClient(
+                host=host,
+                port=QDRANT_PORT,
+                timeout=60,
+            )
+
         client.get_collections()
         return client
+
     except Exception as e:
         raise ConnectionError(
-            f"Qdrant недоступен на {QDRANT_HOST}:{QDRANT_PORT}.\n"
-            f"Запустите: docker compose up -d\nОшибка: {e}"
+            f"Qdrant недоступен: {host}\nОшибка: {e}"
         )
-
-
+        
 def call_llm(prompt: str, retries: int = 3, delay: float = 2.0) -> str:
     """Прямой вызов OpenRouter через openai SDK с автоматическим retry."""
     import time
